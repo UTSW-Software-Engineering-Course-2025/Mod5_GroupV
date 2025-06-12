@@ -39,7 +39,7 @@ def napari_get_reader(path):
     # otherwise we return the *function* that can read ``path``.
     return reader_function
 
-def svs2dask(path: str) -> list[da.Array]:
+def svs2dask(path, tile_size = 256, overlap = 2: str) -> list[da.Array]:
     """Convert an svs image to a dask array with delayed loading.
 
     Parameters:
@@ -51,34 +51,68 @@ def svs2dask(path: str) -> list[da.Array]:
         List[da.Array]:
             List of lazy loaded arrays. Each list index is a zoom level. 
     """
+
     opr = openslide.open_slide(path)
     dzi = openslide.deepzoom.DeepZoomGenerator(
         opr, 
-        tile_size=1000,
-        overlap=1,
+        tile_size=tile_size,
+        overlap=overlap,
         limit_bounds=False
     )
     n_levels = len(dzi.level_dimensions)
     n_t_x = [t[0] for t in dzi.level_tiles]
     n_t_y = [t[1] for t in dzi.level_tiles]
 
-    @dask.delayed(pure=True)
-    def get_tile(level, c, r):
-        tile = dzi.get_tile(level, (c, r))
-        return np.array(tile).transpose((1,0,2))
 
-    arr = [da.concatenate([
-        da.concatenate([
-            da.from_delayed(
-                get_tile(level, col, row), 
-                shape=dzi.get_tile_dimensions(level, (col, row))+(3,),
-                dtype=np.uint8
-                )
-                for row in range(n_t_y[level])
-        ], axis=1)
-        for col in range(n_t_x[level])
-    ]) for level in range(n_levels)]
+    @dask.delayed(pure=True)
+    def delayed_padded_tile(dzi, level, col, row, tile_size=256, overlap=2):
+        target_h = tile_size + overlap
+        target_w = tile_size + overlap
+
+        tile = dzi.get_tile(level, (col, row)).convert("RGB")
+        tile_np = da.array(tile)
+        h, w = tile_np.shape[:2]
+
+        padded = da.zeros((target_h, target_w, 3), dtype=np.uint8)
+
+        crop_h = min(h, target_h)
+        crop_w = min(w, target_w)
+
+        padded[:crop_h, :crop_w, :] = tile_np[:crop_h, :crop_w, :]
+
+        return padded
+
+    def get_padded_tile_array(dzi, level, col, row, tile_size=256, overlap=2):
+        target_h = tile_size + overlap 
+        target_w = tile_size + overlap 
+
+        return da.from_delayed(
+            delayed_padded_tile(dzi, level, col, row, tile_size, overlap),
+            shape=(target_h, target_w, 3),
+            dtype=np.uint8
+        )
+
+
+    arr = []
+
+    for level in range(n_levels):
+    
+        cols, rows = n_t_x[level], n_t_y[level]
+
+        row_blocks = []
+        for row in range(rows):
+            row_tiles = [
+                get_padded_tile_array(dzi, level, col, row)
+                for col in range(cols)
+            ]
+            row_block = da.concatenate(row_tiles, axis=1)
+            row_blocks.append(row_block)
+
+        level_array = da.concatenate(row_blocks, axis=0)
+        arr.append(level_array)
+
     arr.reverse()
+
 
     return arr
 
