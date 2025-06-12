@@ -54,9 +54,9 @@ def svs2dask(path: str) -> list[da.Array]:
     opr = openslide.open_slide(path)
     dzi = openslide.deepzoom.DeepZoomGenerator(
         opr, 
-        tile_size=1000,
-        overlap=1,
-        limit_bounds=False
+        tile_size=256,
+        overlap=0,
+        limit_bounds=True
     )
     n_levels = len(dzi.level_dimensions)
     n_t_x = [t[0] for t in dzi.level_tiles]
@@ -74,9 +74,9 @@ def svs2dask(path: str) -> list[da.Array]:
                 shape=dzi.get_tile_dimensions(level, (col, row))+(3,),
                 dtype=np.uint8
                 )
-                for row in range(n_t_y[level])
+                for row in range(n_t_y[level] - (1 if n_t_y[level] > 1 else 0))
         ], axis=1)
-        for col in range(n_t_x[level])
+        for col in range(n_t_x[level] - (1 if n_t_x[level] > 1 else 0))
     ]) for level in range(n_levels)]
     arr.reverse()
 
