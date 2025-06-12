@@ -7,6 +7,9 @@ https://napari.org/stable/plugins/building_a_plugin/guides.html#readers
 """
 import numpy as np
 import openslide
+import openslide.deepzoom
+import dask
+import dask.array as da
 
 
 def napari_get_reader(path):
@@ -36,6 +39,48 @@ def napari_get_reader(path):
     # otherwise we return the *function* that can read ``path``.
     return reader_function
 
+def svs2dask(path: str) -> list[da.Array]:
+    """Convert an svs image to a dask array with delayed loading.
+
+    Parameters:
+    -----------
+        path : str 
+            Path to the svs file to load and convert
+    Returns:
+    --------
+        List[da.Array]:
+            List of lazy loaded arrays. Each list index is a zoom level. 
+    """
+    opr = openslide.open_slide(path)
+    dzi = openslide.deepzoom.DeepZoomGenerator(
+        opr, 
+        tile_size=1000,
+        overlap=1,
+        limit_bounds=False
+    )
+    n_levels = len(dzi.level_dimensions)
+    n_t_x = [t[0] for t in dzi.level_tiles]
+    n_t_y = [t[1] for t in dzi.level_tiles]
+
+    @dask.delayed(pure=True)
+    def get_tile(level, c, r):
+        tile = dzi.get_tile(level, (c, r))
+        return np.array(tile).transpose((1,0,2))
+
+    arr = [da.concatenate([
+        da.concatenate([
+            da.from_delayed(
+                get_tile(level, col, row), 
+                shape=dzi.get_tile_dimensions(level, (col, row))+(3,),
+                dtype=np.uint8
+                )
+                for row in range(n_t_y[level])
+        ], axis=1)
+        for col in range(n_t_x[level])
+    ]) for level in range(n_levels)]
+    arr.reverse()
+
+    return arr
 
 def reader_function(path):
     """Take a path or list of paths and return a list of LayerData tuples.
@@ -59,16 +104,20 @@ def reader_function(path):
         layer. Both "meta", and "layer_type" are optional. napari will
         default to layer_type=="image" if not provided
     """
-    # handle both a string and a list of strings
-    paths = [path] if isinstance(path, str) else path
+    if type(path) is not str:
+        return None
     # load all files into array
-    #arrays = [np.load(_path) for _path in paths]
-    
-    # stack arrays into single array
-    data = np.squeeze(np.stack(arrays))
+    try:
+        arrays = svs2dask(path)
+    except Exception as e:
+        print(e)
+        return [([np.array([1,1,1])], {})]
 
     # optional kwargs for the corresponding viewer.add_* method
-    add_kwargs = {}
+    add_kwargs = {
+        "contrast_limits": [0,255],
+        "multiscale": True,
+    }
 
     layer_type = "image"  # optional, default is "image"
-    return [(data, add_kwargs, layer_type)]
+    return [(arrays, add_kwargs, layer_type)]
