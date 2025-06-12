@@ -55,9 +55,15 @@ def svs2dask(path, tile_size = 256, overlap = 2: str) -> list[da.Array]:
     opr = openslide.open_slide(path)
     dzi = openslide.deepzoom.DeepZoomGenerator(
         opr, 
+<<<<<<< HEAD
         tile_size=tile_size,
         overlap=overlap,
         limit_bounds=False
+=======
+        tile_size=256,
+        overlap=0,
+        limit_bounds=True
+>>>>>>> 6644628dec8ac9643a6b67ec3d744f70d571b504
     )
     n_levels = len(dzi.level_dimensions)
     n_t_x = [t[0] for t in dzi.level_tiles]
@@ -65,6 +71,7 @@ def svs2dask(path, tile_size = 256, overlap = 2: str) -> list[da.Array]:
 
 
     @dask.delayed(pure=True)
+
     def delayed_padded_tile(dzi, level, col, row, tile_size=256, overlap=2):
         target_h = tile_size + overlap
         target_w = tile_size + overlap
@@ -111,6 +118,8 @@ def svs2dask(path, tile_size = 256, overlap = 2: str) -> list[da.Array]:
         level_array = da.concatenate(row_blocks, axis=0)
         arr.append(level_array)
 
+
+ 
     arr.reverse()
 
 
