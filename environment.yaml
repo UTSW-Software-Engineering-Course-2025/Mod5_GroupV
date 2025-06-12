@@ -441,5 +441,3 @@ dependencies:
       - nodeenv==1.9.1
       - pillow==11.2.1
       - pre-commit==4.2.0
-      - svs-viewer==0.1.dev1+g8c1997b
-prefix: /home2/s440865/.conda/envs/napari-env

@@ -30,7 +30,7 @@ contributions:
   readers:
     - command: svs-viewer.get_reader
       accepts_directories: false
-      filename_patterns: ['*.npy']
+      filename_patterns: ['*.svs']
   writers:
     - command: svs-viewer.write_multiple
       layer_types: ['image*','labels*']
