@@ -107,11 +107,7 @@ def reader_function(path):
     if type(path) is not str:
         return None
     # load all files into array
-    try:
-        arrays = svs2dask(path)
-    except Exception as e:
-        print(e)
-        return [([np.array([1,1,1])], {})]
+    arrays = svs2dask(path)
 
     # optional kwargs for the corresponding viewer.add_* method
     add_kwargs = {
@@ -119,5 +115,4 @@ def reader_function(path):
         "multiscale": True,
     }
 
-    layer_type = "image"  # optional, default is "image"
-    return [(arrays, add_kwargs, layer_type)]
+    return [(arrays, add_kwargs, "image")]
