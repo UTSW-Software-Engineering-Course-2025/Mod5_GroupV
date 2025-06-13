@@ -11,6 +11,9 @@ import openslide.deepzoom
 import dask
 import dask.array as da
 
+# Assuming utils.py is in the same directory or properly installed
+from .utils import rgb2hed, threshold_nuclei_dask
+
 
 def napari_get_reader(path):
     """A basic implementation of a Reader contribution.
@@ -26,6 +29,7 @@ def napari_get_reader(path):
         If the path is a recognized format, return a function that accepts the
         same path or list of paths, and returns a list of layer data tuples.
     """
+    # Fix: Check if path is a list using isinstance(path, list)
     if isinstance(path, list):
         # reader plugins may be handed single path, or a list of paths.
         # if it is a list, it is assumed to be an image stack...
@@ -39,48 +43,141 @@ def napari_get_reader(path):
     # otherwise we return the *function* that can read ``path``.
     return reader_function
 
-def svs2dask(path: str) -> list[da.Array]:
+# We will store the OpenSlide object and DeepZoomGenerator outside
+# the reader_function scope, or pass them appropriately to delayed functions.
+# For simplicity in this plugin, we'll open it once in reader_function
+# and pass the necessary information down.
+
+def svs2dask(svs_path: str, openslide_object: openslide.OpenSlide, dzi_generator: openslide.deepzoom.DeepZoomGenerator) -> list[da.Array]:
     """Convert an svs image to a dask array with delayed loading.
 
     Parameters:
     -----------
-        path : str 
-            Path to the svs file to load and convert
+        svs_path : str
+            Path to the svs file (for context, though not directly used for opening in this function).
+        openslide_object : openslide.OpenSlide
+            The already opened OpenSlide object.
+        dzi_generator : openslide.deepzoom.DeepZoomGenerator
+            The already created DeepZoomGenerator object.
     Returns:
     --------
         List[da.Array]:
-            List of lazy loaded arrays. Each list index is a zoom level. 
+            List of lazy loaded arrays. Each list index is a zoom level.
     """
-    opr = openslide.open_slide(path)
-    dzi = openslide.deepzoom.DeepZoomGenerator(
-        opr, 
-        tile_size=256,
-        overlap=0,
-        limit_bounds=True
-    )
+    opr = openslide_object
+    dzi = dzi_generator
+
     n_levels = len(dzi.level_dimensions)
     n_t_x = [t[0] for t in dzi.level_tiles]
     n_t_y = [t[1] for t in dzi.level_tiles]
 
     @dask.delayed(pure=True)
-    def get_tile(level, c, r):
-        tile = dzi.get_tile(level, (c, r))
-        return np.array(tile).transpose((1,0,2))
+    def get_tile(level, c, r, generator_ref): # Pass the generator as a reference
+        # OpenSlide get_tile returns a PIL Image. Convert to numpy array.
+        # PIL Image is (width, height), so array is (height, width, channels) by default.
+        # Assuming RGB (3 channels). OpenSlide guarantees RGB for its tiles.
+        tile = generator_ref.get_tile(level, (c, r))
+        return np.array(tile)
 
-    arr = [da.concatenate([
-        da.concatenate([
-            da.from_delayed(
-                get_tile(level, col, row), 
-                shape=dzi.get_tile_dimensions(level, (col, row))+(3,),
-                dtype=np.uint8
+    # Dask array for each level, concatenated from tiles
+    arr = []
+    for level in range(n_levels):
+        rows_of_tiles = []
+        for row in range(n_t_y[level]):
+            cols_of_tiles = []
+            for col in range(n_t_x[level]):
+                # Determine shape of an individual tile for from_delayed
+                # get_tile_dimensions returns (width, height)
+                tile_dims_wh = dzi.get_tile_dimensions(level, (col, row))
+                # Dask array expects (height, width, channels)
+                tile_shape_hwc = (tile_dims_wh[1], tile_dims_wh[0], 3)
+
+                delayed_tile = da.from_delayed(
+                    get_tile(level, col, row, dzi), # Pass dzi_generator here
+                    shape=tile_shape_hwc,
+                    dtype=np.uint8
                 )
-                for row in range(n_t_y[level] - (1 if n_t_y[level] > 1 else 0))
-        ], axis=1)
-        for col in range(n_t_x[level] - (1 if n_t_x[level] > 1 else 0))
-    ]) for level in range(n_levels)]
-    arr.reverse()
+                cols_of_tiles.append(delayed_tile)
+            if cols_of_tiles: # Only concatenate if there are tiles
+                rows_of_tiles.append(da.concatenate(cols_of_tiles, axis=1))
+        if rows_of_tiles: # Only concatenate if there are rows
+            arr.append(da.concatenate(rows_of_tiles, axis=0))
+        else: # Handle case of empty level (though unlikely with DeepZoomGenerator)
+            arr.append(da.zeros((0,0,3), dtype=np.uint8)) # Or handle appropriately
 
+    arr.reverse() # Napari expects highest resolution at index 0
     return arr
+
+def thresholded_label_pyramid(
+    svs_path: str,
+    image_pyramid: list[da.Array],
+    openslide_object: openslide.OpenSlide,
+    dzi_generator: openslide.deepzoom.DeepZoomGenerator,
+    threshold_value: float = 0.001
+) -> list[da.Array]:
+    """
+    Creates a Dask-based label pyramid where thresholding is applied only
+    at the highest resolution level.
+
+    Parameters:
+    -----------
+    svs_path : str
+        Path to the SVS file, used to get level dimensions.
+    image_pyramid : list of da.Array
+        The original multiscale image pyramid (from svs2dask).
+    openslide_object : openslide.OpenSlide
+        The already opened OpenSlide object.
+    dzi_generator : openslide.deepzoom.DeepZoomGenerator
+        The already created DeepZoomGenerator object.
+    threshold_value : float
+        The threshold value for identifying nuclei.
+
+    Returns:
+    --------
+    list of da.Array
+        A list representing the label pyramid. Lower resolution levels will be
+        empty Dask arrays, and the highest resolution level will contain the
+        thresholded Dask array.
+    """
+    opr = openslide_object
+    dzi = dzi_generator
+
+    n_levels = len(dzi.level_dimensions)
+    label_pyramid = [None] * n_levels # Initialize the pyramid list
+
+    # The highest resolution level is at index 0 in the reversed image_pyramid
+    highest_res_image_dask = image_pyramid[0]
+
+    # Apply rgb2hed and then threshold_nuclei_dask to the highest resolution
+    # OpenSlide tiles are typically RGB, so we don't strictly need to slice for 4 channels
+    # But keeping it robust in case of future changes or unusual SVS files
+    if highest_res_image_dask.shape[-1] == 4:
+        highest_res_image_dask = highest_res_image_dask[..., :3]
+
+    hed_image = rgb2hed(highest_res_image_dask)
+    thresholded_labels = threshold_nuclei_dask(hed_image, threshold_value=threshold_value)
+
+    # Assign the computed Dask array to the highest resolution level
+    label_pyramid[0] = thresholded_labels
+
+    # For lower resolution levels, create empty dask arrays of the correct shape (2D for labels)
+    # OpenSlide's dzi.level_dimensions are (width, height) at each level
+    # Since image_pyramid is reversed, highest resolution is at index 0 of the original
+    # dzi levels. So the lower resolutions correspond to indices 1 to n_levels-1 of dzi.level_dimensions
+    # in reverse order.
+    # We need to map the image_pyramid index to the original OpenSlide level index.
+    # image_pyramid[i] corresponds to original_level = (n_levels - 1) - i
+    for i in range(1, n_levels):
+        original_level_idx = (n_levels - 1) - i
+        level_dims_wh = dzi.level_dimensions[original_level_idx]
+        # Labels are 2D, so shape is (height, width)
+        label_pyramid[i] = da.zeros(
+            (level_dims_wh[1], level_dims_wh[0]), # (height, width)
+            dtype=np.uint8,
+            chunks=(256, 256) # Use chunks appropriate for deepzoom tiles
+        )
+    return label_pyramid
+
 
 def reader_function(path):
     """Take a path or list of paths and return a list of LayerData tuples.
@@ -104,20 +201,56 @@ def reader_function(path):
         layer. Both "meta", and "layer_type" are optional. napari will
         default to layer_type=="image" if not provided
     """
-    if type(path) is not str:
+    if not isinstance(path, str):
+        # This reader expects a single path, not a list of paths
         return None
-    # load all files into array
-    try:
-        arrays = svs2dask(path)
-    except Exception as e:
-        print(e)
-        return [([np.array([1,1,1])], {})]
 
-    # optional kwargs for the corresponding viewer.add_* method
-    add_kwargs = {
+    # Open the slide once and create the DeepZoomGenerator
+    # This ensures the OpenSlide object remains open for all Dask computations
+    opr = openslide.open_slide(path)
+    dzi = openslide.deepzoom.DeepZoomGenerator(
+        opr,
+        tile_size=256,
+        overlap=0,
+        limit_bounds=True
+    )
+
+    # Load the original SVS image as a Dask array pyramid
+    # Pass the opened OpenSlide object and DeepZoomGenerator
+    image_arrays = svs2dask(path, opr, dzi)
+
+    # Create the thresholded label pyramid
+    label_arrays = thresholded_label_pyramid(path, image_arrays, opr, dzi)
+
+    # Optional kwargs for the original image layer
+    image_add_kwargs = {
         "contrast_limits": [0,255],
         "multiscale": True,
+        "name": "Original Image"
+    }
+    custom_labels_colormap_dict = {
+    0: [0.0, 0.0, 0.0, 0.0],  # Label 0 (background): Transparent black
+    1: [0.0, 1.0, 0.5, 0.8],  # Label 1 (nuclei): Semi-transparent green (adjust R,G,B,A as desired)
+    # You can add more label values if you had them, e.g.,
+    # 2: [1.0, 0.0, 0.0, 1.0], # Label 2: Opaque red
+}
+
+
+
+
+    # Optional kwargs for the labels layer
+    label_add_kwargs = {
+        "multiscale": True,
+        "name": "Nuclei Labels",
+       "colormap": custom_labels_colormap_dict,
+       
     }
 
-    layer_type = "image"  # optional, default is "image"
-    return [(arrays, add_kwargs, layer_type)]
+    # Important: Do NOT close opr here. The Dask arrays still hold references
+    # that will trigger computations later. Napari manages the lifecycle of
+    # data objects provided by readers.
+
+    return [
+        (image_arrays, image_add_kwargs, "image"),
+        (label_arrays, label_add_kwargs, "labels")
+    ]
