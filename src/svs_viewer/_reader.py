@@ -84,9 +84,9 @@ def svs2dask(svs_path: str, openslide_object: openslide.OpenSlide, dzi_generator
     arr = []
     for level in range(n_levels):
         rows_of_tiles = []
-        for row in range(n_t_y[level]):
+        for row in range(n_t_y[level] - (1 if n_t_y[level] > 1 else 0)):
             cols_of_tiles = []
-            for col in range(n_t_x[level]):
+            for col in range(n_t_x[level] - (1 if n_t_x[level] > 1 else 0)):
                 # Determine shape of an individual tile for from_delayed
                 # get_tile_dimensions returns (width, height)
                 tile_dims_wh = dzi.get_tile_dimensions(level, (col, row))
