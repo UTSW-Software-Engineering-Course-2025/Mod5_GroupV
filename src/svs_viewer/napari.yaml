@@ -9,42 +9,13 @@ contributions:
     - id: svs-viewer.get_reader
       python_name: svs_viewer._reader:napari_get_reader
       title: Open data with Svs Viewer
-    - id: svs-viewer.write_multiple
-      python_name: svs_viewer._writer:write_multiple
-      title: Save multi-layer data with Svs Viewer
-    - id: svs-viewer.write_single_image
-      python_name: svs_viewer._writer:write_single_image
-      title: Save image data with Svs Viewer
-    - id: svs-viewer.make_container_widget
-      python_name: svs_viewer:ImageThreshold
-      title: Make threshold Container widget
-    - id: svs-viewer.make_magic_widget
-      python_name: svs_viewer:threshold_magic_widget
-      title: Make threshold magic widget
-    - id: svs-viewer.make_function_widget
-      python_name: svs_viewer:threshold_autogenerate_widget
-      title: Make threshold function widget
     - id: svs-viewer.make_qwidget
-      python_name: svs_viewer:ExampleQWidget
-      title: Make example QWidget
+      python_name: svs_viewer:Segment
+      title: Make segmentation container
   readers:
     - command: svs-viewer.get_reader
       accepts_directories: false
       filename_patterns: ['*.svs']
-  writers:
-    - command: svs-viewer.write_multiple
-      layer_types: ['image*','labels*']
-      filename_extensions: []
-    - command: svs-viewer.write_single_image
-      layer_types: ['image']
-      filename_extensions: ['.npy']
   widgets:
-    - command: svs-viewer.make_container_widget
-      display_name: Container Threshold
-    - command: svs-viewer.make_magic_widget
-      display_name: Magic Threshold
-    - command: svs-viewer.make_function_widget
-      autogenerate: true
-      display_name: Autogenerate Threshold
     - command: svs-viewer.make_qwidget
-      display_name: Example QWidget
+      display_name: Segmentation
