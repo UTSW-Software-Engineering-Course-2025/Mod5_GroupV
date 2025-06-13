@@ -50,8 +50,10 @@ def napari_get_reader(path):
 # For simplicity in this plugin, we'll open it once in reader_function
 # and pass the necessary information down.
 
-def svs2dask(svs_path: str, openslide_object: openslide.OpenSlide, dzi_generator: openslide.deepzoom.DeepZoomGenerator) -> list[da.Array]:
-    """Convert an svs image to a dask array with delayed loading.
+def _svs2dask(svs_path: str, openslide_object: openslide.OpenSlide, dzi_generator: openslide.deepzoom.DeepZoomGenerator) -> list[da.Array]:
+    """Convert an svs image to a dask array with delayed loading. 
+    This is the version that pads the arrays to avoid cropping the edges.
+    Left in here just for future bugfixes, but it has problems when we try to add layers in the ui.
 
     Parameters:
     -----------
@@ -108,6 +110,66 @@ def svs2dask(svs_path: str, openslide_object: openslide.OpenSlide, dzi_generator
 
                 delayed_tile = get_padded_tile_array(dzi, level, col, row)
                     
+                cols_of_tiles.append(delayed_tile)
+            if cols_of_tiles: # Only concatenate if there are tiles
+                rows_of_tiles.append(da.concatenate(cols_of_tiles, axis=1))
+        if rows_of_tiles: # Only concatenate if there are rows
+            arr.append(da.concatenate(rows_of_tiles, axis=0))
+        else: # Handle case of empty level (though unlikely with DeepZoomGenerator)
+            arr.append(da.zeros((0,0,3), dtype=np.uint8)) # Or handle appropriately
+
+    arr.reverse() # Napari expects highest resolution at index 0
+    return arr
+
+def svs2dask(svs_path: str, openslide_object: openslide.OpenSlide, dzi_generator: openslide.deepzoom.DeepZoomGenerator) -> list[da.Array]:
+    """Convert an svs image to a dask array with delayed loading.
+
+    Parameters:
+    -----------
+        svs_path : str
+            Path to the svs file (for context, though not directly used for opening in this function).
+        openslide_object : openslide.OpenSlide
+            The already opened OpenSlide object.
+        dzi_generator : openslide.deepzoom.DeepZoomGenerator
+            The already created DeepZoomGenerator object.
+    Returns:
+    --------
+        List[da.Array]:
+            List of lazy loaded arrays. Each list index is a zoom level.
+    """
+    opr = openslide_object
+    dzi = dzi_generator
+
+    n_levels = len(dzi.level_dimensions)
+    n_t_x = [t[0] for t in dzi.level_tiles]
+    n_t_y = [t[1] for t in dzi.level_tiles]
+
+    @dask.delayed(pure=True)
+    def get_tile(level, c, r, generator_ref): # Pass the generator as a reference
+        # OpenSlide get_tile returns a PIL Image. Convert to numpy array.
+        # PIL Image is (width, height), so array is (height, width, channels) by default.
+        # Assuming RGB (3 channels). OpenSlide guarantees RGB for its tiles.
+        tile = generator_ref.get_tile(level, (c, r))
+        return np.array(tile)
+
+    # Dask array for each level, concatenated from tiles
+    arr = []
+    for level in range(n_levels):
+        rows_of_tiles = []
+        for row in range(n_t_y[level] - (1 if n_t_y[level] > 1 else 0)):
+            cols_of_tiles = []
+            for col in range(n_t_x[level] - (1 if n_t_x[level] > 1 else 0)):
+                # Determine shape of an individual tile for from_delayed
+                # get_tile_dimensions returns (width, height)
+                tile_dims_wh = dzi.get_tile_dimensions(level, (col, row))
+                # Dask array expects (height, width, channels)
+                tile_shape_hwc = (tile_dims_wh[1], tile_dims_wh[0], 3)
+
+                delayed_tile = da.from_delayed(
+                    get_tile(level, col, row, dzi), # Pass dzi_generator here
+                    shape=tile_shape_hwc,
+                    dtype=np.uint8
+                )
                 cols_of_tiles.append(delayed_tile)
             if cols_of_tiles: # Only concatenate if there are tiles
                 rows_of_tiles.append(da.concatenate(cols_of_tiles, axis=1))

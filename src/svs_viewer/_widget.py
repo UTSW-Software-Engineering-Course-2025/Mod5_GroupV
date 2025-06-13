@@ -44,7 +44,10 @@ from ._reader import get_nuclei_labels_from_stardist
 if TYPE_CHECKING:
     import napari
 
-def build_nuclei_pyramid(images, labels):
+def build_nuclei_pyramid(
+        images,#: list[napari.layers._multiscale_data.MultiScaleData],
+        labels: da.Array
+    ) -> list[da.Array]:
     label_pyramids = []
     for image in images:
         n_levels = len(image.shapes)
@@ -52,9 +55,10 @@ def build_nuclei_pyramid(images, labels):
         label_pyramid = [None] * n_levels
         label_pyramid[0] = labels
         for i,shape in enumerate(image.shapes[1:]):
+            print(shape)
             label_pyramid[i+1] = da.zeros(
-                (shape[0], shape[1]),
-                dtype=np.uint16,
+                (shape[1], shape[0]),
+                dtype=np.uint8,
                 chunks=(256,256)
             )
         label_pyramids.append(label_pyramid)
@@ -125,14 +129,25 @@ class Segment(qt.QWidget):
         self.stardist_group.setDisabled(True)
         self.he_threshold_group.setDisabled(True)
 
-    def get_image_layers(self):
+    def get_image_layers(self): #-> list[napari.layers._multiscale_data.MultiScaleData]:
+        """Get all image layers from the napari viewer.
+
+        Returns:
+            list[napari.layers._multiscale_data.MultiScaleData]: List of all underlying data in the image layers.
+        """
         return [
             layer.data
                 for layer in self.viewer.layers 
                 if isinstance(layer, napari.layers.Image)
         ]
 
-    def _on_method_changed(self, method: str):
+    def _on_method_changed(self, method: str) -> None:
+        """Called when the combobox switches methods. 
+        Enables the correct control box.
+
+        Args:
+            method (str): Method from the combobox.
+        """
         if ' ' in method:
             method = method.replace(' ', '_')
 
@@ -150,14 +165,20 @@ class Segment(qt.QWidget):
         self.prob_thresh_value = prob_thresh / 1000000.0
     
     def _on_sd_apply(self):
+        """Called when the `Apply` button is pressed in StarDist.
+        Applies the segmentation to all image layers.
+        """
         layers = self.get_image_layers()
+        if len(layers) == 0:
+            return
         highest_res_label = get_nuclei_labels_from_stardist(
             layers[0], 
             prob_thresh=self.prob_thresh_value,
             nms_thresh=self.nms_thresh_value
             )
         label_pyramid = build_nuclei_pyramid(layers, highest_res_label)
-        del self.viewer.layers['Nuclei Labels']
+        if 'Nuclei Labels' in self.viewer.layers:
+            del self.viewer.layers['Nuclei Labels']
         for i,label in enumerate(label_pyramid):
             name = 'Nuclei Labels'
             if i > 0:

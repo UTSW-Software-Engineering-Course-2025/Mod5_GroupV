@@ -5,8 +5,10 @@ description = "View svs files within Napari"
 readme = "README.md"
 license = {file = "LICENSE"}
 authors = [
-  {name = "Armand Rathgeb"},
-  {email = "armand.rathgeb@gmail.com"},
+    {name = "Armand Rathgeb", email = "armand.rathgeb@gmail.com"},
+    {name = "Taosha Gao", email = "taosha.gao@utsouthwestern.edu"},
+    {name = "Shiqiu Yu", email = "shiqiu.yu2@utsouthwestern.edu"},
+    {name = "Yuyan Liu", email = "yuyan.liu@utsouthwestern.edu"}
 ]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
