@@ -10,7 +10,7 @@ warnings.filterwarnings('ignore')
 
 STARDIST_HE_MODEL = StarDist2D.from_pretrained('2D_versatile_he')
 
-def predict_nucleus(image, model_name='2D_versatile_he', prob_thresh=0.6, nms_thresh=0.4):
+def predict_nucleus(image, model_name='2D_versatile_he', prob_thresh=0.8, nms_thresh=0.2):
     """
     Performs nuclei segmentation using StarDist.
 
@@ -23,7 +23,7 @@ def predict_nucleus(image, model_name='2D_versatile_he', prob_thresh=0.6, nms_th
     prob_thresh : float. Default: 0.6
         Probability threshold for StarDist.
     nms_thresh : float. Default: 0.4
-        Non-maximum suppression threshold for StarDist.
+        Non-maximum suppression (boundary detection) threshold for StarDist.
 
     Returns:
     --------
@@ -35,7 +35,7 @@ def predict_nucleus(image, model_name='2D_versatile_he', prob_thresh=0.6, nms_th
     else:
         model = STARDIST_HE_MODEL
 
-    print(f"Original image shape before processing: {image.shape}")
+    # print(f"Original image shape before processing: {image.shape}")
 
     if isinstance(image, da.Array):
         image = image.compute()
@@ -44,7 +44,7 @@ def predict_nucleus(image, model_name='2D_versatile_he', prob_thresh=0.6, nms_th
     # If the image is (H, W, 1), squeeze the last dimension to make it (H, W)
     if image.ndim == 3 and image.shape[-1] == 1:
         image = np.squeeze(image, axis=-1)
-        print(f"Image shape adjusted to (H, W): {image.shape}")
+        # print(f"Image shape adjusted to (H, W): {image.shape}")
     elif image.ndim == 3 and image.shape[-1] in [3, 4]: # Handle RGB or RGBA images
         pass
     elif image.ndim == 2: 
