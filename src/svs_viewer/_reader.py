@@ -13,10 +13,11 @@ import dask
 import dask.array as da
 from dask import delayed
 
-# from .utils import rgb2hed, threshold_nuclei_dask
+# Uncomment these to use your HED thresholding functions
+from .utils import rgb2hed, threshold_nuclei_dask
 from .stardist_he import predict_nucleus
+# Import LabelColormap for dynamic colormap assignment
 
-# %%
 def napari_get_reader(path):
     """A basic implementation of a Reader contribution.
 
@@ -116,7 +117,7 @@ def _svs2dask(svs_path: str, openslide_object: openslide.OpenSlide, dzi_generato
         if rows_of_tiles: # Only concatenate if there are rows
             arr.append(da.concatenate(rows_of_tiles, axis=0))
         else: # Handle case of empty level (though unlikely with DeepZoomGenerator)
-            arr.append(da.zeros((0,0,3), dtype=np.uint8)) # Or handle appropriately
+            arr.append(da.zeros((0,0,3), dtype=np.uint8)) 
 
     arr.reverse() # Napari expects highest resolution at index 0
     return arr
@@ -185,21 +186,20 @@ def nuclei_label_pyramid(
     image_pyramid: list[da.Array],
     openslide_object: openslide.OpenSlide,
     dzi_generator: openslide.deepzoom.DeepZoomGenerator,
-    labels: da.Array
+    labels: da.Array 
 ) -> list[da.Array]:
     """
-    Creates a Dask-based label pyramid with nuclei identifed and labelled
+    Creates a Dask-based label pyramid with nuclei identified and labelled
     but only at the highest resolution level.
 
     Parameters:
     -----------
     image_pyramid : list of da.Array
-        The original multiscale image pyramid (from svs2dask).
+        The original multiscale image pyramid (from svs2dask). (Kept for original signature)
     openslide_object : openslide.OpenSlide
-        The already opened OpenSlide object (not directly used in this function,
-        but kept for consistency with reader_function signature).
+        The already opened OpenSlide object. (Kept for original signature)
     dzi_generator : openslide.deepzoom.DeepZoomGenerator
-        The already created DeepZoomGenerator object.
+        The DeepZoomGenerator object used to get level dimensions.
     labels : da.Array
         A Dask array containing the segmented nuclei labels at the highest resolution.
 
@@ -208,7 +208,7 @@ def nuclei_label_pyramid(
     list of da.Array
         A list representing the label pyramid. Lower resolution levels will be
         empty Dask arrays (containing background value 0), and the highest
-        resolution level will contain the StarDist-segmented nuclei labels.
+        resolution level will contain the segmented nuclei labels.
     """
     dzi = dzi_generator
     n_levels = len(dzi.level_dimensions)
@@ -218,110 +218,25 @@ def nuclei_label_pyramid(
     label_pyramid[0] = labels
 
     # For lower resolution levels, create Dask arrays filled with zeros (background)
-    # The image_pyramid is reversed (napari expects highest resolution at index 0)
-    # so image_pyramid[i] corresponds to original_level (n_levels - 1) - i
     for i in range(1, n_levels):
         original_level_idx = (n_levels - 1) - i
         level_dims_wh = dzi.level_dimensions[original_level_idx]
-        # Labels are 2D, so shape is (height, width)
         label_pyramid[i] = da.zeros(
             (level_dims_wh[1], level_dims_wh[0]), # (height, width)
-            dtype=np.uint16, # Labels are typically unsigned integers
-            chunks=(256, 256) # Use chunks appropriate for deepzoom tiles
+            dtype=labels.dtype, 
+            chunks=(256, 256) 
         )
     return label_pyramid
 
 
-def reader_function(path, label_method='StarDist'):
-    """Take a path or list of paths and return a list of LayerData tuples.
-
-    Readers are expected to return data as a list of tuples, where each tuple
-    is (data, [add_kwargs, [layer_type]]), "add_kwargs" and "layer_type" are
-    both optional.
-
-    Parameters
-    ----------
-    path : str or list of str
-        Path to file, or list of paths.
-
-    label_method: str. Default: 'StarDist'
-        Which method to use to generate neclei annoatations.
-
-    Returns
-    -------
-    layer_data : list of tuples
-        A list of LayerData tuples where each tuple in the list contains
-        (data, metadata, layer_type), where data is a numpy array, metadata is
-        a dict of keyword arguments for the corresponding viewer.add_* method
-        in napari, and layer_type is a lower-case string naming the type of
-        layer. Both "meta", and "layer_type" are optional. napari will
-        default to layer_type=="image" if not provided
-    """
-    if not isinstance(path, str):
-        # This reader expects a single path, not a list of paths
-        return None
-
-    # Open the slide once and create the DeepZoomGenerator
-    # This ensures the OpenSlide object remains open for all Dask computations
-    opr = openslide.open_slide(path)
-    dzi = openslide.deepzoom.DeepZoomGenerator(
-        opr,
-        tile_size=256,
-        overlap=0,
-        limit_bounds=True
-    )
-
-    # Load the original SVS image as a Dask array pyramid
-    # Pass the opened OpenSlide object and DeepZoomGenerator
-    image_arrays = svs2dask(path, opr, dzi)
-
-    # Optional kwargs for the original image layer
-    image_add_kwargs = {
-        "contrast_limits": [0,255],
-        "multiscale": True,
-        "name": "Original Image"
-    }
-    
-    # Custom colormap for labels: 0 for transparent background, 1 for nuclei
-    # custom_labels_colormap_dict = {
-    #     0: [1.0, 1.0, 1.0, 0.0],  # Label 0 (background): transparent 
-    #     1: [0.0, 0.0, 0.0, 1.0],  # Label 1 (nuclei): black
-    # }
-
-    # Optional kwargs for the labels layer
-    label_add_kwargs = {
-        "multiscale": True,
-        "name": "Nuclei Labels",
-        # "colormap": custom_labels_colormap_dict,
-        "opacity": 0.8 # Adjust opacity as needed
-    }
-
-    if label_method != None:
-        if label_method == 'StarDist':
-            # Get the segmented nuclei labels at the highest resolution
-            highest_res_labels = get_nuclei_labels_from_stardist(image_arrays, prob_thresh=0.8, nms_thresh=0.2)
-        # Create the nuclei label pyramid using the pre-computed highest-resolution labels
-        label_arrays = nuclei_label_pyramid(image_arrays, opr, dzi, highest_res_labels)
-
-        # Important: Do NOT close opr here. The Dask arrays still hold references
-        # that will trigger computations later. Napari manages the lifecycle of
-        # data objects provided by readers.
-        return [
-            (image_arrays, image_add_kwargs, "image"),
-            (label_arrays, label_add_kwargs, "labels")]
-    else:
-        return [(image_arrays, image_add_kwargs, "image")]
-
-    
-### dealing with stardist
+### dealing with stardist (kept as is)
 def predict_on_tile(image_tile, prob_thresh=0.8, nms_thresh=0.2):
     # This function should expect a numpy array chunk
     # and return a numpy array of labels for that chunk.
-
     labels, _ = predict_nucleus(image_tile, prob_thresh=prob_thresh, nms_thresh=nms_thresh)
     labels = labels.astype(np.uint16)
     labels = np.nan_to_num(labels, nan=0, posinf=0, neginf=0)
-    labels[labels > 0] = 255 # Binarize if that's your goal (nuclei vs. background)
+    labels[labels > 0] = 255 # Binarize if that's your goal (nuclei vs. background) -- typically for visualization
     return labels
 
 def get_nuclei_labels_from_stardist(
@@ -331,16 +246,6 @@ def get_nuclei_labels_from_stardist(
     """
     Performs nuclei segmentation using StarDist on the highest resolution image
     from the Dask image pyramid and returns a Dask array of the segmented labels.
-
-    Parameters:
-    -----------
-    image_pyramid : list of da.Array
-        The original multiscale image pyramid (from svs2dask).
-
-    Returns:
-    --------
-    da.Array
-        A Dask array representing the segmented nuclei labels at the highest resolution.
     """
     # The highest resolution image is at index 0 in the napari-ordered image_pyramid
     highest_res_image_dask = image_pyramid[0]
@@ -354,80 +259,110 @@ def get_nuclei_labels_from_stardist(
 
     return labels
 
+### NEW: HED Thresholding functions
+def get_nuclei_labels_from_hed_threshold(
+    image_pyramid: list[da.Array]
+) -> da.Array:
+    """
+    Performs nuclei segmentation using HED deconvolution and thresholding
+    on the highest resolution image from the Dask image pyramid.
+    """
+    highest_res_image_dask = image_pyramid[0]
 
+    # Ensure it's RGB by slicing if it happens to be RGBA
+    if highest_res_image_dask.shape[-1] == 4:
+        highest_res_image_dask = highest_res_image_dask[..., :3]
 
+    hed_image = rgb2hed(highest_res_image_dask)
+    thresholded_labels = threshold_nuclei_dask(hed_image)
 
+    return thresholded_labels.astype(np.uint8) # Ensure binary 0/1 output as uint8
 
-# def thresholded_label_pyramid(
-#     svs_path: str,
-#     image_pyramid: list[da.Array],
-#     openslide_object: openslide.OpenSlide,
-#     dzi_generator: openslide.deepzoom.DeepZoomGenerator,
-#     threshold_value: float = 0.001
-# ) -> list[da.Array]:
-#     """
-#     Creates a Dask-based label pyramid where thresholding is applied only
-#     at the highest resolution level.
+# Main reader function
+def reader_function(path, label_method='hed_threshold'): # Default method remains StarDist
+    """Take a path or list of paths and return a list of LayerData tuples.
 
-#     Parameters:
-#     -----------
-#     svs_path : str
-#         Path to the SVS file, used to get level dimensions.
-#     image_pyramid : list of da.Array
-#         The original multiscale image pyramid (from svs2dask).
-#     openslide_object : openslide.OpenSlide
-#         The already opened OpenSlide object.
-#     dzi_generator : openslide.deepzoom.DeepZoomGenerator
-#         The already created DeepZoomGenerator object.
-#     threshold_value : float
-#         The threshold value for identifying nuclei.
+    Readers are expected to return data as a list of tuples, where each tuple
+    is (data, [add_kwargs, [layer_type]]), "add_kwargs" and "layer_type" are
+    both optional.
 
-#     Returns:
-#     --------
-#     list of da.Array
-#         A list representing the label pyramid. Lower resolution levels will be
-#         empty Dask arrays, and the highest resolution level will contain the
-#         thresholded Dask array.
-#     """
-#     opr = openslide_object
-#     dzi = dzi_generator
+    Parameters
+    ----------
+    path : str or list of str
+        Path to file, or list of paths.
 
-#     n_levels = len(dzi.level_dimensions)
-#     label_pyramid = [None] * n_levels # Initialize the pyramid list
+    label_method: str. Default: 'StarDist'
+        Which method to use to generate nuclei annotations. Can be 'StarDist' or 'hed_threshold'.
 
-#     # The highest resolution level is at index 0 in the reversed image_pyramid
-#     highest_res_image_dask = image_pyramid[0]
+    Returns
+    -------
+    layer_data : list of tuples
+        A list of LayerData tuples where each tuple in the list contains
+        (data, metadata, layer_type), where data is a numpy array, metadata is
+        a dict of keyword arguments for the corresponding viewer.add_* method
+        in napari, and layer_type is a lower-case string naming the type of
+        layer. Both "meta", and "layer_type" are optional. napari will
+        default to layer_type=="image" if not provided
+    """
+    if not isinstance(path, str):
+        return None
 
-#     # Apply rgb2hed and then threshold_nuclei_dask to the highest resolution
-#     # OpenSlide tiles are typically RGB, so we don't strictly need to slice for 4 channels
-#     # But keeping it robust in case of future changes or unusual SVS files
-#     if highest_res_image_dask.shape[-1] == 4:
-#         highest_res_image_dask = highest_res_image_dask[..., :3]
+    opr = openslide.open_slide(path)
+    dzi = openslide.deepzoom.DeepZoomGenerator(
+        opr,
+        tile_size=256,
+        overlap=0,
+        limit_bounds=True
+    )
 
-#     hed_image = rgb2hed(highest_res_image_dask)
-#     thresholded_labels = threshold_nuclei_dask(hed_image, threshold_value=threshold_value)
+    image_arrays = svs2dask(path, opr, dzi)
 
-#     # Assign the computed Dask array to the highest resolution level
-#     label_pyramid[0] = thresholded_labels
+    image_add_kwargs = {
+        "contrast_limits": [0,255],
+        "multiscale": True,
+        "name": "Original Image"
+    }
+    
+    # Initialize labels and their kwargs
+    highest_res_computed_labels = None
+    label_add_kwargs = {
+        "multiscale": True,
+        "opacity": 0.8 # Default opacity for labels
+    }
+    label_layer_type = "labels" # Default to 'labels' layer type
 
-#     # For lower resolution levels, create empty dask arrays of the correct shape (2D for labels)
-#     # OpenSlide's dzi.level_dimensions are (width, height) at each level
-#     # Since image_pyramid is reversed, highest resolution is at index 0 of the original
-#     # dzi levels. So the lower resolutions correspond to indices 1 to n_levels-1 of dzi.level_dimensions
-#     # in reverse order.
-#     # We need to map the image_pyramid index to the original OpenSlide level index.
-#     # image_pyramid[i] corresponds to original_level = (n_levels - 1) - i
-#     for i in range(1, n_levels):
-#         original_level_idx = (n_levels - 1) - i
-#         level_dims_wh = dzi.level_dimensions[original_level_idx]
-#         # Labels are 2D, so shape is (height, width)
-#         label_pyramid[i] = da.zeros(
-#             (level_dims_wh[1], level_dims_wh[0]), # (height, width)
-#             dtype=np.uint8,
-#             chunks=(256, 256) # Use chunks appropriate for deepzoom tiles
-#         )
-#     return label_pyramid
+    if label_method == 'StarDist':
+        highest_res_computed_labels = get_nuclei_labels_from_stardist(image_arrays, prob_thresh=0.8, nms_thresh=0.2)
+        
+        # Colormap for StarDist labels (random colors for different instances)
+        
+        label_add_kwargs["name"] = "Nuclei Labels (StarDist)"
 
+    elif label_method == 'hed_threshold':
+        highest_res_computed_labels = get_nuclei_labels_from_hed_threshold(image_arrays)
+        
+        # Colormap for binary HED threshold labels (0 is background, 1 is nuclei)
+        nuclei_label_colormap = {
+            0: [1.0, 1.0, 1.0, 0.0],  # Label 0 (background): Transparent black
+            1: [0.0, 1.0, 0.5, 0.8],  # Label 1 (nuclei): Semi-transparent green (adjust R,G,B,A as desired)
+        }
+        label_add_kwargs["name"] = "Nuclei Labels (HED Threshold)"
+        label_add_kwargs["colormap"] = nuclei_label_colormap
+        
+    else:
+        # If no valid label_method is provided, only return the image
+        
+        print(f"Warning: Unsupported label_method '{label_method}'. Only original image will be loaded.")
+        return [(image_arrays, image_add_kwargs, "image")]
 
+    # If a label method was successfully processed, create and return the label layer
+    if highest_res_computed_labels is not None:
+        label_arrays = nuclei_label_pyramid(image_arrays, opr, dzi, highest_res_computed_labels)
+        return [
+            (image_arrays, image_add_kwargs, "image"),
+            (label_arrays, label_add_kwargs,label_layer_type)]
+    else:
+        # Fallback if somehow label_method was processed but labels weren't generated
+        return [(image_arrays, image_add_kwargs, "image")]
 
 # # %%
