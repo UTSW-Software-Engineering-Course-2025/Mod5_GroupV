@@ -30,99 +30,143 @@ Replace code below according to your needs.
 """
 from typing import TYPE_CHECKING
 
+import napari
+import numpy as np
+import dask.array as da
 from magicgui import magic_factory
 from magicgui.widgets import CheckBox, Container, create_widget
-from qtpy.QtWidgets import QHBoxLayout, QPushButton, QWidget
+import qtpy.QtWidgets as qt
+import qtpy.QtCore as qtcore
 from skimage.util import img_as_float
+
+from ._reader import get_nuclei_labels_from_stardist
 
 if TYPE_CHECKING:
     import napari
 
+def build_nuclei_pyramid(images, labels):
+    label_pyramids = []
+    for image in images:
+        n_levels = len(image.shapes)
+        print(n_levels)
+        label_pyramid = [None] * n_levels
+        label_pyramid[0] = labels
+        for i,shape in enumerate(image.shapes[1:]):
+            label_pyramid[i+1] = da.zeros(
+                (shape[0], shape[1]),
+                dtype=np.uint16,
+                chunks=(256,256)
+            )
+        label_pyramids.append(label_pyramid)
+    return label_pyramids
 
-# Uses the `autogenerate: true` flag in the plugin manifest
-# to indicate it should be wrapped as a magicgui to autogenerate
-# a widget.
-def threshold_autogenerate_widget(
-    img: "napari.types.ImageData",
-    threshold: "float",
-) -> "napari.types.LabelsData":
-    return img_as_float(img) > threshold
-
-
-# the magic_factory decorator lets us customize aspects of our widget
-# we specify a widget type for the threshold parameter
-# and use auto_call=True so the function is called whenever
-# the value of a parameter changes
-@magic_factory(
-    threshold={"widget_type": "FloatSlider", "max": 1}, auto_call=True
-)
-def threshold_magic_widget(
-    img_layer: "napari.layers.Image", threshold: "float"
-) -> "napari.types.LabelsData":
-    return img_as_float(img_layer.data) > threshold
-
-
-# if we want even more control over our widget, we can use
-# magicgui `Container`
-class ImageThreshold(Container):
+class Segment(qt.QWidget):
     def __init__(self, viewer: "napari.viewer.Viewer"):
         super().__init__()
-        self._viewer = viewer
-        # use create_widget to generate widgets from type annotations
-        self._image_layer_combo = create_widget(
-            label="Image", annotation="napari.layers.Image"
-        )
-        self._threshold_slider = create_widget(
-            label="Threshold", annotation=float, widget_type="FloatSlider"
-        )
-        self._threshold_slider.min = 0
-        self._threshold_slider.max = 1
-        # use magicgui widgets directly
-        self._invert_checkbox = CheckBox(text="Keep pixels below threshold")
 
-        # connect your own callbacks
-        self._threshold_slider.changed.connect(self._threshold_im)
-        self._invert_checkbox.changed.connect(self._threshold_im)
-
-        # append into/extend the container with your widgets
-        self.extend(
-            [
-                self._image_layer_combo,
-                self._threshold_slider,
-                self._invert_checkbox,
-            ]
-        )
-
-    def _threshold_im(self):
-        image_layer = self._image_layer_combo.value
-        if image_layer is None:
-            return
-
-        image = img_as_float(image_layer.data)
-        name = image_layer.name + "_thresholded"
-        threshold = self._threshold_slider.value
-        if self._invert_checkbox.value:
-            thresholded = image < threshold
-        else:
-            thresholded = image > threshold
-        if name in self._viewer.layers:
-            self._viewer.layers[name].data = thresholded
-        else:
-            self._viewer.add_labels(thresholded, name=name)
-
-
-class ExampleQWidget(QWidget):
-    # your QWidget.__init__ can optionally request the napari viewer instance
-    # use a type annotation of 'napari.viewer.Viewer' for any parameter
-    def __init__(self, viewer: "napari.viewer.Viewer"):
-        super().__init__()
         self.viewer = viewer
 
-        btn = QPushButton("Click me!")
-        btn.clicked.connect(self._on_click)
+        self.vbox = qt.QVBoxLayout(self)
+        self.combo = qt.QComboBox(self)
+        self.combo.addItems(["None", "StarDist", "HED Threshold"])
+        self.combo.currentTextChanged.connect(self._on_method_changed)
 
-        self.setLayout(QHBoxLayout())
-        self.layout().addWidget(btn)
+        self.vbox.addWidget(self.combo)
 
-    def _on_click(self):
-        print("napari has", len(self.viewer.layers), "layers")
+        # Tools for stardist segmentation
+        self.stardist_group = qt.QGroupBox("StarDist")
+        self.sd_vbox = qt.QVBoxLayout()
+
+        self.nms_thresh = qt.QSlider()
+        self.nms_thresh.setToolTip("Boundary detection threshold")
+        self.nms_thresh.setMaximum(100)
+        self.nms_thresh.setMinimum(0)
+        self.nms_thresh.setValue(40)
+        self.nms_thresh.valueChanged.connect(self._on_nms_changed)
+        self.nms_thresh.setOrientation(qtcore.Qt.Orientation.Horizontal)
+        self.sd_vbox.addWidget(self.nms_thresh)
+
+        self.prob_thresh = qt.QSlider()
+        self.prob_thresh.setToolTip("Probability threshold for stardist")
+        self.prob_thresh.setMaximum(1000000)
+        self.prob_thresh.setMinimum(0)
+        self.prob_thresh.setValue(692478)
+        self.prob_thresh.valueChanged.connect(self._on_prob_tresh_changed)
+        self.prob_thresh.setOrientation(qtcore.Qt.Orientation.Horizontal)
+        self.sd_vbox.addWidget(self.prob_thresh)
+
+        self.sd_apply_button = qt.QPushButton("Apply")
+        self.sd_apply_button.clicked.connect(self._on_sd_apply)
+        self.sd_vbox.addWidget(self.sd_apply_button)
+
+        self.stardist_group.setLayout(self.sd_vbox)
+
+        # Tools for HED thresholding
+        self.he_threshold_group = qt.QGroupBox("HED Threshold")
+        self.he_vbox = qt.QVBoxLayout()
+
+        self.he_threshold = qt.QSlider()
+        self.he_threshold.setMaximum(1000)
+        self.he_threshold.setMinimum(0)
+        self.he_threshold.setValue(1)
+        self.he_threshold.valueChanged.connect(self._on_thresh_changed)
+        self.he_threshold.setOrientation(qtcore.Qt.Orientation.Horizontal)
+        self.he_vbox.addWidget(self.he_threshold)
+
+        self.he_threshold_group.setLayout(self.he_vbox)
+
+        self.vbox.addWidget(self.stardist_group)
+        self.vbox.addWidget(self.he_threshold_group)
+
+
+        self.prob_thresh_value = .692478
+        self.nms_thresh_value  = .4
+        self.threshold_value   = .001
+        self.stardist_group.setDisabled(True)
+        self.he_threshold_group.setDisabled(True)
+
+    def get_image_layers(self):
+        return [
+            layer.data
+                for layer in self.viewer.layers 
+                if isinstance(layer, napari.layers.Image)
+        ]
+
+    def _on_method_changed(self, method: str):
+        if ' ' in method:
+            method = method.replace(' ', '_')
+
+        self.stardist_group.setDisabled(True)
+        self.he_threshold_group.setDisabled(True)
+        if method == "StarDist":
+            self.stardist_group.setEnabled(True)
+        elif method == "HED_Threshold":
+            self.he_threshold_group.setEnabled(True)
+
+    def _on_nms_changed(self, nms: int):
+        self.nms_thresh_value = nms / 100.0
+
+    def _on_prob_tresh_changed(self, prob_thresh: int):
+        self.prob_thresh_value = prob_thresh / 1000000.0
+    
+    def _on_sd_apply(self):
+        layers = self.get_image_layers()
+        highest_res_label = get_nuclei_labels_from_stardist(
+            layers[0], 
+            prob_thresh=self.prob_thresh_value,
+            nms_thresh=self.nms_thresh_value
+            )
+        label_pyramid = build_nuclei_pyramid(layers, highest_res_label)
+        del self.viewer.layers['Nuclei Labels']
+        for i,label in enumerate(label_pyramid):
+            name = 'Nuclei Labels'
+            if i > 0:
+                name += str(i)
+            self.viewer.add_labels(label, name=name, opacity=.8)
+            print(f"Added label {name}")
+
+
+    def _on_thresh_changed(self, threshold: int):
+        self.threshold_value = threshold / 1000
+        layers = self.get_image_layers()
+        highest_res = layers[0][0]

@@ -11,6 +11,7 @@ import openslide
 import openslide.deepzoom
 import dask
 import dask.array as da
+from dask import delayed
 
 # Uncomment these to use your HED thresholding functions
 from .utils import rgb2hed, threshold_nuclei_dask
@@ -66,6 +67,26 @@ def svs2dask(svs_path: str, openslide_object: openslide.OpenSlide, dzi_generator
         List[da.Array]:
             List of lazy loaded arrays. Each list index is a zoom level.
     """
+    @delayed
+    def delayed_padded_tile(dzi, level, col, row, tile_size=256, overlap=0):
+        target_h = tile_size + 2 * overlap
+        target_w = tile_size + 2 * overlap
+        tile = dzi.get_tile(level, (col, row)).convert("RGB")
+        tile_np = np.array(tile)
+        h, w = tile_np.shape[:2]
+
+        padded = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+        crop_h = min(h, target_h)
+        crop_w = min(w, target_w)
+        padded[:crop_h, :crop_w, :] = tile_np[:crop_h, :crop_w, :]
+        return padded
+
+    def get_padded_tile_array(dzi, level, col, row, tile_size=256, overlap=0):
+        target_h = tile_size + 2 * overlap
+        target_w = tile_size + 2 * overlap
+        delayed_tile = delayed_padded_tile(dzi, level, col, row, tile_size, overlap)
+        return da.from_delayed(delayed_tile, shape=(target_h, target_w, 3), dtype=np.uint8)
+
     opr = openslide_object
     dzi = dzi_generator
 
@@ -73,35 +94,21 @@ def svs2dask(svs_path: str, openslide_object: openslide.OpenSlide, dzi_generator
     n_t_x = [t[0] for t in dzi.level_tiles]
     n_t_y = [t[1] for t in dzi.level_tiles]
 
-    @dask.delayed(pure=True)
-    def get_tile(level, c, r, generator_ref): # Pass the generator as a reference
-        # OpenSlide get_tile returns a PIL Image. Convert to numpy array.
-        # PIL Image is (width, height), so array is (height, width, channels) by default.
-        # Assuming RGB (3 channels). OpenSlide guarantees RGB for its tiles.
-        tile = generator_ref.get_tile(level, (c, r))
-        return np.array(tile)
-
     # Dask array for each level, concatenated from tiles
     arr = []
     for level in range(n_levels):
         rows_of_tiles = []
-        # NOTE: Reverting to original loop ranges as per user's request.
-        # Be aware that `-(1 if n_t_y[level] > 1 else 0)` might cause issues
-        # with single-tile dimensions or incomplete last tiles.
-        for row in range(n_t_y[level] - (1 if n_t_y[level] > 1 else 0)):
+        for row in range(n_t_y[level]):
             cols_of_tiles = []
-            for col in range(n_t_x[level] - (1 if n_t_x[level] > 1 else 0)):
+            for col in range(n_t_x[level]):
                 # Determine shape of an individual tile for from_delayed
                 # get_tile_dimensions returns (width, height)
                 tile_dims_wh = dzi.get_tile_dimensions(level, (col, row))
                 # Dask array expects (height, width, channels)
                 tile_shape_hwc = (tile_dims_wh[1], tile_dims_wh[0], 3)
 
-                delayed_tile = da.from_delayed(
-                    get_tile(level, col, row, dzi), # Pass dzi_generator here
-                    shape=tile_shape_hwc,
-                    dtype=np.uint8
-                )
+                delayed_tile = get_padded_tile_array(dzi, level, col, row)
+                    
                 cols_of_tiles.append(delayed_tile)
             if cols_of_tiles: # Only concatenate if there are tiles
                 rows_of_tiles.append(da.concatenate(cols_of_tiles, axis=1))
@@ -291,8 +298,7 @@ def reader_function(path, label_method='hed_threshold'): # Default method remain
         label_arrays = nuclei_label_pyramid(image_arrays, opr, dzi, highest_res_computed_labels)
         return [
             (image_arrays, image_add_kwargs, "image"),
-            (label_arrays, label_add_kwargs, label_layer_type) # Use 'labels' layer type
-        ]
+            (label_arrays, label_add_kwargs,label_layer_type)]
     else:
         # Fallback if somehow label_method was processed but labels weren't generated
         return [(image_arrays, image_add_kwargs, "image")]
