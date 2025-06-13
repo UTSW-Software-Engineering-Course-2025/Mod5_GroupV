@@ -70,11 +70,6 @@ class Segment(qt.QWidget):
         self.viewer = viewer
 
         self.vbox = qt.QVBoxLayout(self)
-        self.combo = qt.QComboBox(self)
-        self.combo.addItems(["None", "StarDist", "HED Threshold"])
-        self.combo.currentTextChanged.connect(self._on_method_changed)
-
-        self.vbox.addWidget(self.combo)
 
         # Tools for stardist segmentation
         self.stardist_group = qt.QGroupBox("StarDist")
@@ -84,7 +79,7 @@ class Segment(qt.QWidget):
         self.nms_thresh.setToolTip("Boundary detection threshold")
         self.nms_thresh.setMaximum(100)
         self.nms_thresh.setMinimum(0)
-        self.nms_thresh.setValue(40)
+        self.nms_thresh.setValue(20)
         self.nms_thresh.valueChanged.connect(self._on_nms_changed)
         self.nms_thresh.setOrientation(qtcore.Qt.Orientation.Horizontal)
         self.sd_vbox.addWidget(self.nms_thresh)
@@ -93,7 +88,7 @@ class Segment(qt.QWidget):
         self.prob_thresh.setToolTip("Probability threshold for stardist")
         self.prob_thresh.setMaximum(1000000)
         self.prob_thresh.setMinimum(0)
-        self.prob_thresh.setValue(692478)
+        self.prob_thresh.setValue(800000)
         self.prob_thresh.valueChanged.connect(self._on_prob_tresh_changed)
         self.prob_thresh.setOrientation(qtcore.Qt.Orientation.Horizontal)
         self.sd_vbox.addWidget(self.prob_thresh)
@@ -145,13 +140,11 @@ class Segment(qt.QWidget):
         self.vbox.addWidget(self.he_threshold_group)
 
 
-        self.prob_thresh_value = .692478
-        self.nms_thresh_value  = .4
+        self.prob_thresh_value = .8
+        self.nms_thresh_value  = .2
         self.h_threshold_value = .001
         self.e_threshold_value = 0
         self.d_threshold_value = 0
-        self.stardist_group.setDisabled(True)
-        self.he_threshold_group.setDisabled(True)
 
     def get_image_layers(self): #-> list[napari.layers._multiscale_data.MultiScaleData]:
         """Get all image layers from the napari viewer.
@@ -165,37 +158,25 @@ class Segment(qt.QWidget):
                 if isinstance(layer, napari.layers.Image)
         ]
 
-    def _on_method_changed(self, method: str) -> None:
-        """Called when the combobox switches methods. 
-        Enables the correct control box.
-
-        Args:
-            method (str): Method from the combobox.
-        """
-        if ' ' in method:
-            method = method.replace(' ', '_')
-
-        self.stardist_group.setDisabled(True)
-        self.he_threshold_group.setDisabled(True)
-        if method == "StarDist":
-            self.stardist_group.setEnabled(True)
-        elif method == "HED_Threshold":
-            self.he_threshold_group.setEnabled(True)
-
     def _on_nms_changed(self, nms: int):
         self.nms_thresh_value = nms / 100.0
 
     def _on_prob_tresh_changed(self, prob_thresh: int):
         self.prob_thresh_value = prob_thresh / 1000000.0
     
-    def add_nuclei_layers(self, label_pyramid):
-        if 'Nuclei Labels' in self.viewer.layers:
-            del self.viewer.layers['Nuclei Labels']
+    def add_nuclei_layers(self, label_pyramid, name, **kwargs):
         for i,label in enumerate(label_pyramid):
-            name = 'Nuclei Labels'
+            _name = name
             if i > 0:
-                name += str(i)
-            self.viewer.add_labels(label, name=name, opacity=.8)
+                _name += f" ({i})"
+            if _name in self.viewer.layers:
+                del self.viewer.layers[_name]
+            self.viewer.add_labels(label, 
+                name=name,
+                opacity=.8,
+                multiscale=True,
+                **kwargs
+                )
             print(f"Added label {name}")
         
     def _on_sd_apply(self):
@@ -211,7 +192,7 @@ class Segment(qt.QWidget):
             nms_thresh=self.nms_thresh_value
             )
         label_pyramid = build_nuclei_pyramid(layers, highest_res_label)
-        self.add_nuclei_layers(label_pyramid)
+        self.add_nuclei_layers(label_pyramid, "Nuclei Labels")
 
     def _on_h_changed(self, val: int):
         self.h_threshold_value = val / 1000
@@ -230,8 +211,18 @@ class Segment(qt.QWidget):
         hed_image = rgb2hed(layers[0][0])
         highest_res_label = threshold_nuclei_dask(
             hed_image, 
-            (self.h_threshold_value, self.e_threshold_value, self.d_threshold_value)
+            self.h_threshold_value, 
+            self.e_threshold_value, 
+            self.d_threshold_value
         )
+        nuclei_label_colormap = {
+            0: [1.0, 1.0, 1.0, 0.0],  # Label 0 (background): Transparent black
+            1: [0.0, 1.0, 0.5, 0.8],  # Label 1 (nuclei): Semi-transparent green (adjust R,G,B,A as desired)
+        }
         label_pyramid = build_nuclei_pyramid(layers, highest_res_label)
-        self.add_nuclei_layers(label_pyramid)
+        self.add_nuclei_layers(
+            label_pyramid,
+            "Nuclei Labels (HED Threshold)",
+            colormap=nuclei_label_colormap
+            )
 

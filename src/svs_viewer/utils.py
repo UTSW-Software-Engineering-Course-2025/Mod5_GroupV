@@ -21,7 +21,6 @@ def threshold_nuclei_dask(hed_image_dask_array,
                            hematoxylin_min_threshold=0.01, # Renamed for clarity: minimum H value
                            eosin_max_threshold=None,        # Maximum E value to be considered nucleus
                            dab_max_threshold=None):         # Maximum D value to be considered nucleus
-def threshold_nuclei_dask(hed_image_dask_array, threshold_value=(0.001, 0, 0)):
     """
     Thresholds the Hematoxylin channel and optionally filters by Eosin/DAB channels
     of an HED Dask array to identify nuclei.
@@ -35,10 +34,10 @@ def threshold_nuclei_dask(hed_image_dask_array, threshold_value=(0.001, 0, 0)):
     nuclei_condition = (H > hematoxylin_min_threshold)
 
     # Apply additional filtering conditions based on max thresholds for Eosin and DAB
-    if eosin_max_threshold is not None:
+    if eosin_max_threshold is not None and eosin_max_threshold > 0:
         nuclei_condition = nuclei_condition & (E < eosin_max_threshold)
 
-    if dab_max_threshold is not None:
+    if dab_max_threshold is not None and dab_max_threshold > 0:
         nuclei_condition = nuclei_condition & (D < dab_max_threshold)
 
     nuclei_mask = nuclei_condition.astype(np.uint8)

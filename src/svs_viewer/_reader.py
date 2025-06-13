@@ -13,7 +13,6 @@ import dask
 import dask.array as da
 from dask import delayed
 
-Uncomment these to use your HED thresholding functions
 from .utils import rgb2hed, threshold_nuclei_dask
 from .stardist_he import predict_nucleus
 # Import LabelColormap for dynamic colormap assignment
@@ -279,7 +278,7 @@ def get_nuclei_labels_from_hed_threshold(
     return thresholded_labels.astype(np.uint8) # Ensure binary 0/1 output as uint8
 
 # Main reader function
-def reader_function(path, label_method='hed_threshold'): # Default method remains StarDist
+def reader_function(path, label_method='StarDist'): # Default method remains StarDist
     """Take a path or list of paths and return a list of LayerData tuples.
 
     Readers are expected to return data as a list of tuples, where each tuple
@@ -329,12 +328,27 @@ def reader_function(path, label_method='hed_threshold'): # Default method remain
         "multiscale": True,
         "opacity": 0.8 # Default opacity for labels
     }
-    label_layer_type = "labels" # Default to 'labels' layer type
 
     if label_method != None:
         if label_method == 'StarDist':
             # Get the segmented nuclei labels at the highest resolution
             highest_res_labels = get_nuclei_labels_from_stardist(image_arrays, prob_thresh=0.8, nms_thresh=0.2)
+            label_add_kwargs["name"] = "Nuclei Labels"
+        elif label_method == 'hed_threshold':
+            highest_res_labels = get_nuclei_labels_from_hed_threshold(image_arrays)
+            
+            # Colormap for binary HED threshold labels (0 is background, 1 is nuclei)
+            nuclei_label_colormap = {
+                0: [1.0, 1.0, 1.0, 0.0],  # Label 0 (background): Transparent black
+                1: [0.0, 1.0, 0.5, 0.8],  # Label 1 (nuclei): Semi-transparent green (adjust R,G,B,A as desired)
+            }
+            label_add_kwargs["name"] = "Nuclei Labels (HED Threshold)"
+            label_add_kwargs["colormap"] = nuclei_label_colormap
+        else:
+            # If no valid label_method is provided, only return the image
+            print(f"Warning: Unsupported label_method '{label_method}'. Only original image will be loaded.")
+            return [(image_arrays, image_add_kwargs, "image")]
+
         # Create the nuclei label pyramid using the pre-computed highest-resolution labels
         label_arrays = nuclei_label_pyramid(image_arrays, opr, dzi, highest_res_labels)
 
@@ -343,9 +357,10 @@ def reader_function(path, label_method='hed_threshold'): # Default method remain
         # data objects provided by readers.
         return [
             (image_arrays, image_add_kwargs, "image"),
-            (label_arrays, label_add_kwargs,label_layer_type)]
+            (label_arrays, label_add_kwargs, "labels")]
     else:
         # Fallback if somehow label_method was processed but labels weren't generated
         return [(image_arrays, image_add_kwargs, "image")]
 
 # # %%
+# %%
