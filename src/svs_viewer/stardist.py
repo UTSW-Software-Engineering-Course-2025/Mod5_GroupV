@@ -1,0 +1,36 @@
+# %%
+import numpy as np
+from stardist.models import StarDist2D
+from stardist.plot import render_label
+from csbdeep.utils import normalize
+from skimage.color import rgb2gray
+import dask.array as da
+import warnings
+warnings.filterwarnings('ignore')
+
+def predict_nucleus(image, model_name='2D_versatile_he', prob_thresh=0.5, nms_thresh=0.4):
+    model = StarDist2D.from_pretrained(model_name)
+
+    print(f"Original image shape before processing: {image.shape}")
+
+    if isinstance(image, da.Array):
+        image = image.compute()
+
+    # Ensure the image is 2D or 2D with a single channel for StarDist2D
+    # If the image is (H, W, 1), squeeze the last dimension to make it (H, W)
+    if image.ndim == 3 and image.shape[-1] == 1:
+        image = np.squeeze(image, axis=-1)
+        print(f"Image shape adjusted to (H, W): {image.shape}")
+    elif image.ndim == 3 and image.shape[-1] in [3, 4]: # Handle RGB or RGBA images
+        pass
+    elif image.ndim == 2: 
+        pass
+    else:
+        print(f"Warning: Unexpected image dimensionality {image.ndim}. StarDist2D expects 2D (H, W) or 3D (H, W, C).")
+        return None   
+
+    labels, _ = model.predict_instances(normalize(image), prob_thresh=prob_thresh, nms_thresh=nms_thresh)
+    full_results = render_label(labels, img=image)
+    return labels, image
+
+
