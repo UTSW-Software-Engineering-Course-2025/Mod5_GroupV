@@ -17,10 +17,19 @@ def rgb2hed(rgb):
     da.maximum(stains, 0, out=stains) # clip zeros
     return stains
 
-def threshold_nuclei_dask(hed_image_dask_array, threshold_value=0.001):
+def threshold_nuclei_dask(hed_image_dask_array, threshold_value=(0.001, 0, 0)):
     """
     Thresholds the Hematoxylin channel of an HED Dask array to identify nuclei.
     """
+    h_t,e_t,d_t = threshold_value
     hematoxylin_channel = hed_image_dask_array[:, :, 0] # Assuming Hematoxylin is the first channel
-    nuclei_mask = (hematoxylin_channel > threshold_value).astype(np.uint8)
+    eosin_channel = hed_image_dask_array[:,:,1]
+    dab_channel = hed_image_dask_array[:,:,2]
+    if e_t > 0 or d_t > 0:
+        nuclei_mask = da.zeros_like(hed_image_dask_array, dtype=np.uint8)
+        nuclei_mask[:,:,0] = (hematoxylin_channel > h_t).astype(np.uint8)
+        nuclei_mask[:,:,1] = (eosin_channel > e_t).astype(np.uint8)
+        nuclei_mask[:,:,2] = (dab_channel > d_t).astype(np.uint8)
+    else:
+        nuclei_mask = (hematoxylin_channel > h_t).astype(np.uint8)
     return nuclei_mask

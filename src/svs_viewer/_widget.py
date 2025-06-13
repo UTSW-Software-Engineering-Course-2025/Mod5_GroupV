@@ -40,6 +40,7 @@ import qtpy.QtCore as qtcore
 from skimage.util import img_as_float
 
 from ._reader import get_nuclei_labels_from_stardist
+from .utils import threshold_nuclei_dask, rgb2hed
 
 if TYPE_CHECKING:
     import napari
@@ -51,11 +52,9 @@ def build_nuclei_pyramid(
     label_pyramids = []
     for image in images:
         n_levels = len(image.shapes)
-        print(n_levels)
         label_pyramid = [None] * n_levels
         label_pyramid[0] = labels
         for i,shape in enumerate(image.shapes[1:]):
-            print(shape)
             label_pyramid[i+1] = da.zeros(
                 (shape[1], shape[0]),
                 dtype=np.uint8,
@@ -109,13 +108,36 @@ class Segment(qt.QWidget):
         self.he_threshold_group = qt.QGroupBox("HED Threshold")
         self.he_vbox = qt.QVBoxLayout()
 
-        self.he_threshold = qt.QSlider()
-        self.he_threshold.setMaximum(1000)
-        self.he_threshold.setMinimum(0)
-        self.he_threshold.setValue(1)
-        self.he_threshold.valueChanged.connect(self._on_thresh_changed)
-        self.he_threshold.setOrientation(qtcore.Qt.Orientation.Horizontal)
-        self.he_vbox.addWidget(self.he_threshold)
+        self.h_threshold = qt.QSlider()
+        self.h_threshold.setToolTip("Hematoxylin channel threshold")
+        self.h_threshold.setMaximum(1000)
+        self.h_threshold.setMinimum(0)
+        self.h_threshold.setValue(1)
+        self.h_threshold.valueChanged.connect(self._on_h_changed)
+        self.h_threshold.setOrientation(qtcore.Qt.Orientation.Horizontal)
+        self.he_vbox.addWidget(self.h_threshold)
+
+        self.e_threshold = qt.QSlider()
+        self.e_threshold.setToolTip("Eosin channel threshold")
+        self.e_threshold.setMaximum(1000)
+        self.e_threshold.setMinimum(0)
+        self.e_threshold.setValue(0)
+        self.e_threshold.valueChanged.connect(self._on_e_changed)
+        self.e_threshold.setOrientation(qtcore.Qt.Orientation.Horizontal)
+        self.he_vbox.addWidget(self.e_threshold)
+
+        self.d_threshold = qt.QSlider()
+        self.d_threshold.setToolTip("DAB channel threshold")
+        self.d_threshold.setMaximum(1000)
+        self.d_threshold.setMinimum(0)
+        self.d_threshold.setValue(0)
+        self.d_threshold.valueChanged.connect(self._on_d_changed)
+        self.d_threshold.setOrientation(qtcore.Qt.Orientation.Horizontal)
+        self.he_vbox.addWidget(self.d_threshold)
+
+        self.hed_apply_button = qt.QPushButton("Apply")
+        self.hed_apply_button.clicked.connect(self._on_thresh_applied)
+        self.he_vbox.addWidget(self.hed_apply_button)
 
         self.he_threshold_group.setLayout(self.he_vbox)
 
@@ -125,7 +147,9 @@ class Segment(qt.QWidget):
 
         self.prob_thresh_value = .692478
         self.nms_thresh_value  = .4
-        self.threshold_value   = .001
+        self.h_threshold_value = .001
+        self.e_threshold_value = 0
+        self.d_threshold_value = 0
         self.stardist_group.setDisabled(True)
         self.he_threshold_group.setDisabled(True)
 
@@ -164,6 +188,16 @@ class Segment(qt.QWidget):
     def _on_prob_tresh_changed(self, prob_thresh: int):
         self.prob_thresh_value = prob_thresh / 1000000.0
     
+    def add_nuclei_layers(self, label_pyramid):
+        if 'Nuclei Labels' in self.viewer.layers:
+            del self.viewer.layers['Nuclei Labels']
+        for i,label in enumerate(label_pyramid):
+            name = 'Nuclei Labels'
+            if i > 0:
+                name += str(i)
+            self.viewer.add_labels(label, name=name, opacity=.8)
+            print(f"Added label {name}")
+        
     def _on_sd_apply(self):
         """Called when the `Apply` button is pressed in StarDist.
         Applies the segmentation to all image layers.
@@ -177,17 +211,27 @@ class Segment(qt.QWidget):
             nms_thresh=self.nms_thresh_value
             )
         label_pyramid = build_nuclei_pyramid(layers, highest_res_label)
-        if 'Nuclei Labels' in self.viewer.layers:
-            del self.viewer.layers['Nuclei Labels']
-        for i,label in enumerate(label_pyramid):
-            name = 'Nuclei Labels'
-            if i > 0:
-                name += str(i)
-            self.viewer.add_labels(label, name=name, opacity=.8)
-            print(f"Added label {name}")
+        self.add_nuclei_layers(label_pyramid)
 
+    def _on_h_changed(self, val: int):
+        self.h_threshold_value = val / 1000
+    
+    def _on_e_changed(self, val: int):
+        self.e_threshold_value = val / 1000
+    
+    def _on_d_changed(self, val: int):
+        self.d_threshold_value = val / 1000
 
-    def _on_thresh_changed(self, threshold: int):
-        self.threshold_value = threshold / 1000
+    def _on_thresh_applied(self):
         layers = self.get_image_layers()
-        highest_res = layers[0][0]
+        if len(layers) == 0:
+            return 
+        
+        hed_image = rgb2hed(layers[0][0])
+        highest_res_label = threshold_nuclei_dask(
+            hed_image, 
+            (self.h_threshold_value, self.e_threshold_value, self.d_threshold_value)
+        )
+        label_pyramid = build_nuclei_pyramid(layers, highest_res_label)
+        self.add_nuclei_layers(label_pyramid)
+

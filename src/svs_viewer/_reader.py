@@ -13,7 +13,7 @@ import dask
 import dask.array as da
 from dask import delayed
 
-# from .utils import rgb2hed, threshold_nuclei_dask
+from .utils import rgb2hed, threshold_nuclei_dask
 from .stardist_he import predict_nucleus
 
 # %%
@@ -300,6 +300,9 @@ def reader_function(path, label_method='StarDist'):
         if label_method == 'StarDist':
             # Get the segmented nuclei labels at the highest resolution
             highest_res_labels = get_nuclei_labels_from_stardist(image_arrays, prob_thresh=0.8, nms_thresh=0.2)
+        elif label_method == "HED_Threshold":
+            hed_image = rgb2hed(image_arrays[0])
+            highest_res_labels = threshold_nuclei_dask(hed_image)
         # Create the nuclei label pyramid using the pre-computed highest-resolution labels
         label_arrays = nuclei_label_pyramid(image_arrays, opr, dzi, highest_res_labels)
 
